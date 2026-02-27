@@ -1,0 +1,4 @@
+interface:
+  display_name: "UI Consistency Guardian"
+  short_description: "Apply QuantaPKI UI consistency rules"
+  default_prompt: "Use $ui-consistency-guardian to apply QuantaPKI UI standards, maximize component reuse, and validate usability across the target journey."

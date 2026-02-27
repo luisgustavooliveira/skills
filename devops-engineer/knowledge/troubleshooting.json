@@ -1,0 +1,491 @@
+{
+  "version": "1.0.0",
+  "last_updated": "2026-01-19",
+  "patterns": [
+    {
+      "id": "openbao-auth-failed",
+      "category": "openbao",
+      "severity": "high",
+      "symptoms": [
+        "OpenBao authentication failed",
+        "Status: 403 Forbidden",
+        "permission denied",
+        "invalid role_id or secret_id"
+      ],
+      "diagnostics": [
+        {
+          "step": 1,
+          "description": "Test connectivity to OpenBao",
+          "command": "curl -k {openbao_url}/v1/sys/health",
+          "expected": "HTTP 200 OK"
+        },
+        {
+          "step": 2,
+          "description": "Validate RoleID exists",
+          "command": "bao read -namespace=snpsgroup auth/approle/role/{project}-{env}/role-id",
+          "expected": "role_id value displayed"
+        },
+        {
+          "step": 3,
+          "description": "Test manual authentication",
+          "command": "bao write -namespace=snpsgroup auth/approle/login role_id={ROLE_ID} secret_id={SECRET_ID}",
+          "expected": "Token returned successfully"
+        },
+        {
+          "step": 4,
+          "description": "Verify policy permissions",
+          "command": "bao policy read -namespace=snpsgroup {project}-{env}-policy",
+          "expected": "Policy should include: path 'secret/data/{project}/{env}/*' with 'read' capability"
+        }
+      ],
+      "common_fixes": [
+        {
+          "fix": "Regenerate SecretID",
+          "command": "bao write -namespace=snpsgroup -f auth/approle/role/{project}-{env}/secret-id",
+          "followup": "Update Azure DevOps Variable Group with new SecretID"
+        },
+        {
+          "fix": "Recreate AppRole",
+          "steps": [
+            "bao delete -namespace=snpsgroup auth/approle/role/{project}-{env}",
+            "bao write -namespace=snpsgroup auth/approle/role/{project}-{env} token_policies=\"{project}-{env}-policy\" token_ttl=1h"
+          ]
+        },
+        {
+          "fix": "Fix policy permissions",
+          "steps": [
+            "Update {project}-{env}-policy.hcl to include correct paths",
+            "bao policy write -namespace=snpsgroup {project}-{env}-policy policy.hcl"
+          ]
+        }
+      ],
+      "prevention": [
+        "Set SecretID TTL to 0 (never expires) for CI/CD",
+        "Store RoleID and SecretID in Azure Key Vault",
+        "Enable audit logging in OpenBao",
+        "Document AppRole configuration in DEPLOYMENT.md"
+      ]
+    },
+    {
+      "id": "tokens-not-replaced",
+      "category": "configuration",
+      "severity": "high",
+      "symptoms": [
+        "Configuration contains #{...}",
+        "Application errors about invalid connection string",
+        "UnhandledPromiseRejectionWarning: ConnectionStringParser",
+        "Tokens still visible in deployed config"
+      ],
+      "diagnostics": [
+        {
+          "step": 1,
+          "description": "Check if FetchSecrets target executed",
+          "log_search": "Successfully authenticated with OpenBao",
+          "expected": "Log entry present in build output"
+        },
+        {
+          "step": 2,
+          "description": "List environment variables set by FetchSecrets",
+          "command": "env | grep SECRET_",
+          "expected": "SECRET_{TOKEN_NAME} variables present"
+        },
+        {
+          "step": 3,
+          "description": "Verify secret exists in OpenBao",
+          "command": "bao kv get -namespace=snpsgroup secret/{project}/{env}",
+          "expected": "Secret keys match token names"
+        },
+        {
+          "step": 4,
+          "description": "Check token naming convention",
+          "rule": "Token: #{kebab-case} must map to EnvVar: SECRET_{SCREAMING_SNAKE_CASE}",
+          "examples": [
+            "#{database-connection-string} → SECRET_DATABASE_CONNECTION_STRING",
+            "#{oauth-client-secret} → SECRET_OAUTH_CLIENT_SECRET"
+          ]
+        }
+      ],
+      "common_fixes": [
+        {
+          "fix": "Verify token-to-envvar mapping",
+          "check": "Ensure token name conversion: replace hyphens with underscores, convert to uppercase, prefix with SECRET_"
+        },
+        {
+          "fix": "Add missing secret to OpenBao",
+          "command": "bao kv put -namespace=snpsgroup secret/{project}/{env} {key}={value}"
+        },
+        {
+          "fix": "Re-run configuration targets",
+          "command": "./build.cmd FetchSecrets ApplyConfiguration --environment {Environment}"
+        },
+        {
+          "fix": "Manual token replacement",
+          "steps": [
+            "Identify unreplaced tokens: grep -r '#{' config/",
+            "Get secret value from OpenBao",
+            "Use ConfigHelper.ReplaceTokens() or sed to replace"
+          ]
+        }
+      ],
+      "prevention": [
+        "Create tokens-inventory.json with all required tokens",
+        "Run ConfigHelper.ValidateNoTokensRemaining() before deployment",
+        "Add token validation to pre-deployment checks",
+        "Document all tokens in DEPLOYMENT.md"
+      ]
+    },
+    {
+      "id": "health-check-timeout",
+      "category": "deployment",
+      "severity": "critical",
+      "symptoms": [
+        "Health check failed after 20 attempts",
+        "Deployment marked as failed",
+        "Connection refused on health endpoint",
+        "HTTP 500/503 from /health"
+      ],
+      "diagnostics": [
+        {
+          "step": 1,
+          "description": "Check if application started",
+          "windows": "Get-WebAppPoolState '{ServiceName}'",
+          "linux": "systemctl status {service}",
+          "docker": "docker ps | grep {container}",
+          "expected": "Service/container is running"
+        },
+        {
+          "step": 2,
+          "description": "Check application logs",
+          "windows": "Get-Content 'C:\\inetpub\\logs\\{project}\\app.log' -Tail 50",
+          "linux": "journalctl -u {service} -n 50",
+          "docker": "docker logs {container} --tail 50",
+          "look_for": "Startup errors, dependency failures, configuration issues"
+        },
+        {
+          "step": 3,
+          "description": "Test health endpoint manually",
+          "command": "curl -v {baseUrl}/health",
+          "expected": "HTTP 200 OK with JSON response"
+        },
+        {
+          "step": 4,
+          "description": "Verify port accessibility",
+          "command": "netstat -an | grep {port}",
+          "expected": "Port is LISTENING"
+        },
+        {
+          "step": 5,
+          "description": "Check for firewall blocks",
+          "windows": "Test-NetConnection -ComputerName localhost -Port {port}",
+          "linux": "sudo iptables -L -n | grep {port}"
+        }
+      ],
+      "common_fixes": [
+        {
+          "fix": "Wait for slower startup",
+          "change": "Increase timeout: ValidateDeployment(env, timeoutSeconds: 120, maxAttempts: 40)"
+        },
+        {
+          "fix": "Fix database connection",
+          "check": "Verify database-connection-string is correct and database is accessible"
+        },
+        {
+          "fix": "Fix appsettings.json syntax",
+          "command": "cat config/appsettings.json | jq .",
+          "expected": "Valid JSON (no syntax errors)"
+        },
+        {
+          "fix": "Restart service",
+          "windows": "Restart-WebAppPool -Name '{ServiceName}'",
+          "linux": "systemctl restart {service}",
+          "docker": "docker restart {container}"
+        },
+        {
+          "fix": "Check port conflicts",
+          "steps": [
+            "Identify process using port: netstat -ano | findstr :{port} (Windows) or lsof -i :{port} (Linux)",
+            "Kill conflicting process or change port in configuration"
+          ]
+        }
+      ],
+      "prevention": [
+        "Implement health check endpoint with dependency validation",
+        "Add startup logging to track initialization progress",
+        "Use staged startup (e.g., warm-up endpoints)",
+        "Configure Application Insights for detailed telemetry"
+      ]
+    },
+    {
+      "id": "build-compilation-failed",
+      "category": "build",
+      "severity": "high",
+      "symptoms": [
+        "The process 'dotnet' failed with exit code 1",
+        "Compilation error",
+        "CS0246: The type or namespace name",
+        "NU1101: Unable to find package"
+      ],
+      "diagnostics": [
+        {
+          "step": 1,
+          "description": "Verify .NET SDK version",
+          "command": "dotnet --version",
+          "expected": "9.0.100 or higher"
+        },
+        {
+          "step": 2,
+          "description": "Check global.json SDK version",
+          "command": "cat global.json | jq .sdk.version",
+          "expected": "Matches installed SDK or uses rollForward"
+        },
+        {
+          "step": 3,
+          "description": "Verify NuGet sources",
+          "command": "dotnet nuget list source",
+          "expected": "All sources accessible (especially private feeds)"
+        },
+        {
+          "step": 4,
+          "description": "Attempt detailed restore",
+          "command": "dotnet restore --verbosity detailed",
+          "look_for": "Package resolution failures, authentication errors"
+        }
+      ],
+      "common_fixes": [
+        {
+          "fix": "Update .NET SDK",
+          "windows": "Download from https://dotnet.microsoft.com/download/dotnet/9.0",
+          "linux": "sudo apt-get update && sudo apt-get install -y dotnet-sdk-9.0"
+        },
+        {
+          "fix": "Clear NuGet cache",
+          "command": "dotnet nuget locals all --clear",
+          "followup": "dotnet restore"
+        },
+        {
+          "fix": "Add NuGet source with credentials",
+          "command": "dotnet nuget add source {url} -n {name} -u {user} -p {password} --store-password-in-clear-text"
+        },
+        {
+          "fix": "Fix .csproj package references",
+          "check": "Remove invalid or non-existent package references from *.csproj files"
+        },
+        {
+          "fix": "Clean and rebuild",
+          "commands": [
+            "./build.cmd Clean",
+            "git clean -fdx",
+            "./build.cmd Restore Compile"
+          ]
+        }
+      ],
+      "prevention": [
+        "Pin SDK version in global.json",
+        "Use packages.lock.json for deterministic restores",
+        "Cache NuGet packages in CI/CD pipeline",
+        "Document private NuGet feed setup in README"
+      ]
+    },
+    {
+      "id": "approval-not-triggering",
+      "category": "pipeline",
+      "severity": "medium",
+      "symptoms": [
+        "Pipeline stuck at DeployProduction stage",
+        "No approval notification received",
+        "Stage shows 'Waiting' indefinitely",
+        "Approvers not receiving emails"
+      ],
+      "diagnostics": [
+        {
+          "step": 1,
+          "description": "Check Environment configuration",
+          "location": "Azure DevOps → Pipelines → Environments → {ProjectName}-Production",
+          "verify": "Approvals and checks are configured"
+        },
+        {
+          "step": 2,
+          "description": "Verify approvers list",
+          "check": "Approvers are actual Azure DevOps users with email addresses"
+        },
+        {
+          "step": 3,
+          "description": "Check approver permissions",
+          "required_role": "User or Administrator on the Environment",
+          "location": "Environment → Security → Permissions"
+        },
+        {
+          "step": 4,
+          "description": "Look for approval request in UI",
+          "location": "Pipeline Run → Stage → Review button",
+          "expected": "'Approve' button visible to approvers"
+        }
+      ],
+      "common_fixes": [
+        {
+          "fix": "Add approvers to Environment",
+          "steps": [
+            "Navigate to: Pipelines → Environments → {ProjectName}-Production",
+            "Click menu (⋮) → Approvals and checks",
+            "Click '+' → Approvals",
+            "Add approvers, set timeout (e.g., 7 days)",
+            "Save"
+          ]
+        },
+        {
+          "fix": "Grant permissions to approvers",
+          "steps": [
+            "Environment → Security",
+            "Add user/group",
+            "Assign 'User' or 'Administrator' role"
+          ]
+        },
+        {
+          "fix": "Manually trigger approval",
+          "steps": [
+            "Navigate to Pipeline Run",
+            "Click on 'DeployProduction' stage",
+            "Click 'Review'",
+            "Click 'Approve' (if you're an approver)"
+          ]
+        },
+        {
+          "fix": "Check notification settings",
+          "location": "User Settings → Notifications → Pipelines",
+          "enable": "'Approval requested' notifications"
+        }
+      ],
+      "prevention": [
+        "Document approvers in DEPLOYMENT.md",
+        "Test approval flow in non-production first",
+        "Set up notification rules for approvers",
+        "Configure backup approvers"
+      ]
+    },
+    {
+      "id": "secrets-rotation-expired",
+      "category": "openbao",
+      "severity": "medium",
+      "symptoms": [
+        "Authentication failed after previously working",
+        "SecretID expired",
+        "Token lease exceeded",
+        "Need to rotate credentials"
+      ],
+      "diagnostics": [
+        {
+          "step": 1,
+          "description": "Check AppRole SecretID TTL",
+          "command": "bao read -namespace=snpsgroup auth/approle/role/{project}-{env}",
+          "look_for": "secret_id_ttl value (0 = never expires)"
+        },
+        {
+          "step": 2,
+          "description": "Check when secret was last rotated",
+          "reference": "DEPLOYMENT.md → Secret Rotation History"
+        }
+      ],
+      "rotation_procedure": [
+        {
+          "step": 1,
+          "description": "Generate new SecretID",
+          "command": "bao write -namespace=snpsgroup -f auth/approle/role/{project}-{env}/secret-id",
+          "note": "Save the secret_id value"
+        },
+        {
+          "step": 2,
+          "description": "Update Azure DevOps Variable Group",
+          "steps": [
+            "Navigate to: Pipelines → Library → {ProjectName}-{Environment}-Secrets",
+            "Edit 'OpenBao.SecretId' variable",
+            "Paste new SecretID value",
+            "Mark as secret",
+            "Save"
+          ]
+        },
+        {
+          "step": 3,
+          "description": "Test authentication",
+          "command": "./build.cmd FetchSecrets --environment {Environment}",
+          "expected": "Successfully authenticated with OpenBao"
+        },
+        {
+          "step": 4,
+          "description": "Document rotation",
+          "update": "DEPLOYMENT.md → Secret Rotation History",
+          "entry": "Date: {now}, Environment: {env}, Rotated: SecretID, By: {user}"
+        }
+      ],
+      "rotation_schedule": {
+        "Development": "Every 90 days",
+        "Staging": "Every 60 days",
+        "Production": "Every 30 days"
+      },
+      "prevention": [
+        "Set secret_id_ttl=0 for CI/CD AppRoles",
+        "Set up automated rotation reminders",
+        "Use calendar events for rotation schedule",
+        "Implement rotation without downtime procedure"
+      ]
+    }
+  ],
+  "common_commands": [
+    {
+      "description": "Write secret",
+      "command": "bao kv put -namespace=snpsgroup secret/{project}/{env} {key}={value}"
+    },
+    {
+      "description": "Read secret",
+      "command": "bao kv get -namespace=snpsgroup secret/{project}/{env}"
+    },
+    {
+      "description": "Read RoleID",
+      "command": "bao read -namespace=snpsgroup auth/approle/role/{project}-{env}/role-id"
+    },
+    {
+      "description": "Generate SecretID",
+      "command": "bao write -namespace=snpsgroup -f auth/approle/role/{project}-{env}/secret-id"
+    },
+    {
+      "description": "Login with AppRole",
+      "command": "bao write -namespace=snpsgroup auth/approle/login role_id={role_id} secret_id={secret_id}"
+    }
+  ],
+  "diagnostic_commands": {
+    "openbao": {
+      "health_check": "curl -k {openbao_url}/v1/sys/health",
+      "list_policies": "bao policy list -namespace=snpsgroup",
+      "read_policy": "bao policy read -namespace=snpsgroup {policy_name}",
+      "list_approles": "bao list -namespace=snpsgroup auth/approle/role",
+      "get_secret": "bao kv get -namespace=snpsgroup secret/{path}",
+      "test_auth": "bao write -namespace=snpsgroup auth/approle/login role_id={ROLE_ID} secret_id={SECRET_ID}"
+    },
+    "azure_devops": {
+      "list_pipelines": "az pipelines list --org {org_url} --project {project}",
+      "list_variable_groups": "az pipelines variable-group list --project {project}",
+      "show_variable_group": "az pipelines variable-group show --id {group_id}",
+      "list_environments": "az devops invoke --area distributedtask --resource environments --route-parameters project={project}",
+      "pipeline_runs": "az pipelines runs list --pipeline-ids {pipeline_id}"
+    },
+    "system": {
+      "dotnet_version": "dotnet --version",
+      "dotnet_info": "dotnet --info",
+      "nuget_sources": "dotnet nuget list source",
+      "git_status": "git status",
+      "git_log": "git log --oneline -10",
+      "disk_space": "df -h (Linux) or Get-PSDrive (Windows)"
+    },
+    "health_checks": {
+      "test_endpoint": "curl -v {baseUrl}/health",
+      "test_with_timeout": "curl --max-time 5 {baseUrl}/health",
+      "check_port": "netstat -an | grep {port} (Linux) or netstat -an | findstr {port} (Windows)",
+      "test_connectivity": "Test-NetConnection -ComputerName {host} -Port {port} (Windows) or nc -zv {host} {port} (Linux)"
+    }
+  },
+  "escalation_paths": {
+    "openbao_issues": "Contact: DevOps Team → #devops channel",
+    "azure_devops_issues": "Contact: Platform Team → create ticket in Azure Boards",
+    "production_incidents": "Contact: On-call Engineer → PagerDuty alert",
+    "security_concerns": "Contact: Security Team → security@snpsgroup.com"
+  }
+}
