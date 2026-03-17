@@ -29,7 +29,7 @@ Use this skill to convert UI edits into a repeatable implementation flow instead
   - Section spacing: `24px`
   - Field/grid spacing: `16px` or `20px` (pick one per form area)
   - Label/input spacing: `6px`
-- Apply typography and color tokens from `conductor/ui-standards.md`.
+- Apply typography and color tokens from `ui-standards.md`. Search for file location.
 - Avoid hardcoded colors when a CSS variable exists.
 
 ### 4. Harden Data, States, and Feedback
@@ -73,7 +73,7 @@ UI Consistency Report
 
 ## References
 
-- Source standard: `conductor/ui-standards.md`
+- Source standard: `ui-standards.md`
 - Journey checklist: `references/ui-implementation-playbook.md`
 
 Load only the sections needed for the current journey.
