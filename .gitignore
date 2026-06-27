@@ -1,0 +1,61 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+build/
+out/
+bin/
+obj/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# IDE & Editor
+.vs/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.ntvs_analysis.dat
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.log
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# AI tooling caches
+.gbrain/
+.hermes/
+.kiro/
+.openclaw/
+.opencode/
+.slate/
+.factory/
+.agents/
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Coverage reports
+coverage/
+.nyc_output/
+
+# Lock files (auto-generated)
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
