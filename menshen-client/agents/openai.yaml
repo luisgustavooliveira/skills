@@ -1,0 +1,4 @@
+interface:
+  display_name: "Menshen Client Integration"
+  short_description: "Integrate products with Menshen governance"
+  default_prompt: "Implemente a integracao do produto atual com o sistema de governanca Menshen."
